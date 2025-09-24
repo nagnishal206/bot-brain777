@@ -1,0 +1,138 @@
+import osmnx as ox
+import networkx as nx
+import folium
+import heapq
+from collections import deque
+from IPython.display import display, clear_output
+import ipywidgets as widgets
+import math
+
+# Load campus OSM graph
+graph = ox.graph_from_xml("/Users/vemanahemanthbabu/Downloads/map.osm", simplify=False)
+nodes, edges = ox.graph_to_gdfs(graph)
+center = (nodes.geometry.y.mean(), nodes.geometry.x.mean())
+
+POIS = { "Flag post": (13.22169,77.75495), "Entry gate":(13.22020,77.75417), 
+         "Exit gate":(13.22017,77.75508), "Check post 1":(13.22140,77.75507),
+         "Check post 2":(13.22128,77.75528), "Acad 1":(13.22218,77.75537),
+         "Acad 2":(13.22339,77.75595), "Library":(13.22199,77.75540),
+         "Food Court":(13.22488,77.75716), "Faculty Block":(13.22359,77.75726),
+         "Hostel Block":(13.22458,77.75886), "Cricket Ground":(13.22898,77.75718),
+         "Basket Ball":(13.22883,77.75813), "Volley Ball":(13.22869,77.75856),
+         "Tennis Ball":(13.22840,77.75837), "Foot Ball":(13.22769,77.75642),
+         "Rest Area":(13.22834,77.75775)}
+
+def heuristic(node1, node2):
+    # straight-line distance
+    y1,x1 = graph.nodes[node1]['y'], graph.nodes[node1]['x']
+    y2,x2 = graph.nodes[node2]['y'], graph.nodes[node2]['x']
+    return math.dist([y1,x1],[y2,x2])*111000
+
+# ----------------- Search Algorithms -----------------
+def bfs_osm(start,end):
+    frontier = deque([[start]])
+    explored = set()
+    while frontier:
+        path = frontier.popleft()
+        node = path[-1]
+        if node==end:
+            return path, explored
+        if node not in explored:
+            explored.add(node)
+            for nbr in graph.neighbors(node):
+                frontier.append(path + [nbr])
+    return None, explored
+
+def dfs_osm(start,end):
+    frontier = [[start]]
+    explored = set()
+    while frontier:
+        path = frontier.pop()
+        node = path[-1]
+        if node==end:
+            return path, explored
+        if node not in explored:
+            explored.add(node)
+            for nbr in graph.neighbors(node):
+                frontier.append(path + [nbr])
+    return None, explored
+
+def ucs_osm(start,end):
+    frontier = [(0,[start])]
+    explored = set()
+    while frontier:
+        cost,path = heapq.heappop(frontier)
+        node = path[-1]
+        if node==end:
+            return path, cost, explored
+        if node not in explored:
+            explored.add(node)
+            for nbr in graph.neighbors(node):
+                edge_data = graph.get_edge_data(node,nbr)
+                w = min([d['length'] for d in edge_data.values()])
+                heapq.heappush(frontier,(cost+w,path+[nbr]))
+    return None,None,explored
+
+def astar_osm(start,end):
+    frontier = [(heuristic(start,end),0,[start])]
+    explored = set()
+    while frontier:
+        f,g,path = heapq.heappop(frontier)
+        node = path[-1]
+        if node==end:
+            return path, g, explored
+        if node not in explored:
+            explored.add(node)
+            for nbr in graph.neighbors(node):
+                edge_data = graph.get_edge_data(node,nbr)
+                w = min([d['length'] for d in edge_data.values()])
+                heapq.heappush(frontier,(g+w+heuristic(nbr,end), g+w, path+[nbr]))
+    return None,None,explored
+
+# ----------------- Route Visualization -----------------
+def show_search_route(start_name,end_name,algo_name):
+    start_latlon, end_latlon = POIS[start_name], POIS[end_name]
+    start_node = ox.distance.nearest_nodes(graph, start_latlon[1], start_latlon[0])
+    end_node = ox.distance.nearest_nodes(graph, end_latlon[1], end_latlon[0])
+
+    # Select algorithm
+    if algo_name=="BFS": path, explored = bfs_osm(start_node,end_node); cost=None
+    elif algo_name=="DFS": path, explored = dfs_osm(start_node,end_node); cost=None
+    elif algo_name=="UCS": path, cost, explored = ucs_osm(start_node,end_node)
+    else: path, cost, explored = astar_osm(start_node,end_node)
+
+    # Map
+    m = folium.Map(location=center, zoom_start=17)
+    # all roads gray
+    for _, row in edges.iterrows():
+        coords = [(lat, lon) for lon, lat in row.geometry.coords]
+        folium.PolyLine(coords, color="gray", weight=2, opacity=0.4).add_to(m)
+    # explored nodes
+    for n in explored:
+        y,x = graph.nodes[n]['y'], graph.nodes[n]['x']
+        folium.CircleMarker((y,x), radius=3, color="orange", opacity=0.5).add_to(m)
+    # final path
+    if path:
+        coords = [(graph.nodes[n]['y'],graph.nodes[n]['x']) for n in path]
+        folium.PolyLine(coords, color="white", weight=8, opacity=0.8).add_to(m)
+        folium.PolyLine(coords, color="blue", weight=4, opacity=1).add_to(m)
+    # Start & End markers
+    folium.Marker(start_latlon, popup=f"Start: {start_name}", icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker(end_latlon, popup=f"End: {end_name}", icon=folium.Icon(color="red")).add_to(m)
+
+    return m
+
+# ----------------- UI -----------------
+start_dd = widgets.Dropdown(options=list(POIS.keys()), description="Start:")
+end_dd = widgets.Dropdown(options=list(POIS.keys()), description="End:")
+algo_dd = widgets.Dropdown(options=["BFS","DFS","UCS","A*"], description="Algorithm")
+btn = widgets.Button(description="Run Search", button_style="success")
+out = widgets.Output()
+
+def on_btn_click(b):
+    with out:
+        clear_output(wait=True)
+        display(show_search_route(start_dd.value,end_dd.value,algo_dd.value))
+
+btn.on_click(on_btn_click)
+display(widgets.HBox([start_dd,end_dd,algo_dd,btn]), out)
